@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+
+from hashlib import new
+import logging
+from operator import is_
+import socket
+import subprocess  # nosec B404
+import time
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+from enum import Enum, unique
+from pathlib import Path
+from typing import Any, DefaultDict, List, Optional
+
+import bs4
+from cryptography import x509
+import pydantic
+import requests
+import typer
+import yaml
+from custom_requests import http
+from pydantic import BaseModel
+
+# TODO: replace openssl calls with native tls calls
+# TODO: use sets everywhere, lots of duplicated effort
+
+# SAN cert handling:
+#   If we get a hit, then:
+#       If there are SAN records, then:
+#           - common name may not be of interest
+#           - one of the SAN entries is the match
+#       Else:
+#           - common name is of interest
+# Deployment check should be done against ALL hosts of interest, as we have no
+# reason to believe all those DNS names are hosted on the same IP addr
+#
+# Question: should we create new RowItem for each SAN entry?
+
+# we use a global logger, always set to debug, until otherwise changed
+logger = logging.getLogger(__name__)
+# and we need a global host count
+host_count: dict = DefaultDict(int)
+
+
+@unique
+class DecomState(str, Enum):
+    """Distinguish between ways a host can (no longer) be accessed."""
+
+    DECOMMISSIONED = "Decommissioned"
+    UNREACHABLE = "Not on public net"
+    NORMAL = "active"
+    UNSPECIFIED = "unspecified"
+
+
+# TODO: create exemption reason enum
+# skipped domain
+# skipped host:
+#   decom state
+
+
+class HostException(BaseModel):
+    hostname: str
+    bug: Optional[pydantic.AnyHttpUrl]
+    state: DecomState
+    current_cert_expiration: date
+    notes: str = ""
+
+
+class DomainException(BaseModel):
+    domain: str
+    notes: str = ""
+
+
+class Exceptions(BaseModel):
+    domains_to_skip: List[DomainException] = []
+    hosts_to_skip: List[HostException] = []
+
+
+def fetch_data(domain: str):
+    url = f"https://crt.sh/?dNSName={domain}&exclude=expired&deduplicate=Y"
+    resp = http.get(url)
+    if not resp.ok:
+        raise requests.exceptions.HTTPError(
+            f"skipping {url}, code {resp.status_code}, after retries",
+            response=resp,
+        )
+    return resp
+
+
+def extract_data_from_page(
+    resp: requests.Response, domain: str
+) -> Optional[bs4.element.Tag]:
+    soup = bs4.BeautifulSoup(resp.content, features="html.parser")
+    table = soup.find_all("table")[-1]
+    headers = [x.get_text(strip=True) for x in table.find_all("th")]
+    # verify that they haven't changed the columns on us
+    expected_headers = [
+        "crt.sh ID",
+        "Logged At⇧",
+        "Not Before",
+        "Not After",
+        "Common Name",
+        "Matching Identities",
+        "Issuer Name",
+    ]
+    no_cert_headers = [
+        "Certificates",
+    ]
+    if headers != expected_headers:
+        if headers != no_cert_headers:
+            logger.error(f"Input data format invalid for {domain}.")
+        table = None
+    return table
+
+
+column_names = (
+    "crt_sh_id",
+    "logged_at",
+    "not_before",
+    "not_after",
+    "common_name",
+    "matching_ids",
+    "issuer_name",
+)
+
+
+class HostCertData(BaseModel):
+    # the non optional fields are the columns of the form
+    crt_sh_id: int
+    logged_at: date
+    not_before: date
+    not_after: date
+    common_name: str  # N.B. this may not be of interest in the SAN case
+    matching_ids: str
+    issuer_name: str
+    cert_type: str = "Normal"  # vs SAN
+    # host names can be embedded in the certificate, they will be extracted into this array
+    host_names: Optional[list[str]]
+
+    def __key(self) -> tuple:
+        return self.crt_sh_id, self.common_name
+
+    def __hash__(self) -> int:
+        return hash(self.__key())
+
+    def __eq__(self, other):
+        equal = False
+        if isinstance(other, HostCertData):
+            equal = self.__key() == other.__key()
+        return equal
+
+
+class CertStatus(BaseModel):
+    common_name: str = ""
+    validity_too_long: bool = False
+    renewal_needed: bool = False
+    renewal_issued: bool = False
+    renewal_deployed: bool = False
+    unreachable_host: bool = False
+    current_deployed_expiration: Optional[datetime] = None
+    expirations: list[date] = []
+    issuer: str = ""
+
+    def update(self, other: HostCertData, warning_date: date):
+        if other.not_after <= warning_date:
+            self.renewal_needed = True
+            self.issuer = other.issuer_name
+        elif other.not_after - other.not_before > timedelta(days=398):
+            # these are certs issued for too long by current rules,
+            # and have not expired yet. We don't count them as a valid
+            # renewal, even though the date is in the future
+            self.validity_too_long = True
+        elif other.not_after > warning_date:
+            self.renewal_issued = True
+        self.common_name = other.common_name
+        self.expirations.append(other.not_after)
+
+
+class StatusByName:
+    cert_statuses: dict[str, CertStatus] = defaultdict(CertStatus)
+    warning_date: date
+
+    def __init__(self, warning_date: date):
+        self.warning_date = warning_date
+
+    def add(self, expiration: HostCertData):
+        self.cert_statuses[expiration.common_name].update(expiration, self.warning_date)
+
+    def __add__(self, other: "StatusByName") -> "StatusByName":
+        # just merge these values in
+        self.cert_statuses.update(other.cert_statuses)
+        return self
+
+
+def extract_all_hosts(table_data: dict) -> list[HostCertData]:
+    # save the data from table as default, but will need modification in SAN case
+    row_data = HostCertData(**table_data)
+    hosts = [row_data]
+    global host_count
+
+    # check if SAN cert
+    cert_id = row_data.crt_sh_id
+    url = f"https://crt.sh/?d={cert_id}"
+    try:
+        cert_response = http.get(url=url)
+    except (requests.exceptions.SSLError, requests.exceptions.RetryError) as e:
+        msg = f"Skipping cert SAN check for {row_data.common_name} ({repr(e)})"
+        logger.error(msg)
+        return hosts
+    if cert_response.status_code == 200:
+        cert_pem = cert_response.text.encode("utf-8")
+        cert = x509.load_pem_x509_certificate(cert_pem)
+        san = cert.extensions.get_extension_for_oid(
+            x509.OID_SUBJECT_ALTERNATIVE_NAME
+        ).value
+        if isinstance(san, x509.SubjectAlternativeName):
+            # we know default needs modification, so remove it from the list
+            hosts = []
+            for dns_name in san.get_values_for_type(x509.DNSName):
+                if host_of_interest(dns_name):
+                    host_count[dns_name] += 1
+                    host_cert = HostCertData(**table_data, cert_type="SAN")
+                    host_cert.common_name = dns_name
+                    hosts.append(host_cert)
+        else:
+            # Not a SAN cert, so only 1 host
+            host_count[row_data.common_name] += 1
+    else:
+        logger.error(
+            f"Could not retrive {url}, status code {cert_response.status_code}."
+        )
+    logger.debug(f"extract_all_hosts found {', '.join([x.common_name for x in hosts])}")
+    return hosts
+
+
+def extract_cert_data(
+    table: bs4.element.Tag, domain: str, debug: bool = False
+) -> list[HostCertData]:
+    cert_list: set[HostCertData] = set()
+    table_row_count = 0
+    for row in table.find_all("tr"):
+        table_row_count += 1
+        row_values = [x.get_text(strip=True) for x in row.find_all("td")]
+        if len(row_values) != len(column_names):
+            # skip partial rows
+            if len(row_values):
+                # don't log empty rows
+                logger.debug(
+                    f"""skipped partial row of {len(row_values)} fields: "{", ".join(row_values)}" """
+                )
+            continue
+        d = {k: v for k, v in zip(column_names, row_values)}
+        new_hosts = extract_all_hosts(d)
+        cert_list.update(new_hosts)
+    logger.debug(
+        f"found {len(cert_list)} (host, certid) tuples for {domain}, from {table_row_count} rows"
+    )
+    logger.debug("; ".join({x.common_name for x in cert_list}))
+    return list(cert_list)
+
+
+def certificate_of_interest(entry: HostCertData) -> bool:
+    # we already tested during extraction
+    return True
+    # iterate over the host names in the cert. If any are of interest, then the certificate is of interest
+    # cert_of_interest = False
+    # if entry.host_names:
+    #     for host in entry.host_names:
+    #         if host_of_interest(host):
+    #             cert_of_interest = True
+    #             break
+    # return cert_of_interest
+
+
+def find_potentially_expiring_certs(
+    info: list[HostCertData],
+    warning_date: date,
+    exception_file: Optional[Path],
+) -> StatusByName:
+
+    status = StatusByName(warning_date)
+    expiring: list[HostCertData] = []
+    for i in info:
+        # while we don't look for hosts that are not of interest, the site may
+        # return records for hosts we don't care about, so filter at this level
+        # as well
+        if not certificate_of_interest(i):
+            continue
+        if i.not_after < warning_date:
+            expiring.append(i)
+        status.add(i)
+    return status
+
+
+def cert_deployed(data: CertStatus, warning_date: date, debug: bool = False) -> bool:
+    host = data.common_name
+    if host.startswith("*."):
+        # don't bother - we can't check wildcard cert deployment
+        # however, some wildcards are deployed on the parent node, so check that
+        # by eliminating the '*.'
+        logger.info(f"trimming wildcard for {host}")
+        host = host[2:]
+
+    deployed = False
+
+    # Some IT Infra advertise a public name with addr 127.0.0.1 -- treat these as unreachable
+    fqdn = socket.getfqdn(host)
+    is_localhost = fqdn in ["localhost", "0.0.0.0", "127.0.0.1"]  # nosec
+    if is_localhost:
+        # Some IT infra advertises as localhost -- assume deployment
+        logger.debug(f"{host} assumed deployed, as it resolves to {fqdn}")
+        deployed = True
+        data.renewal_deployed = deployed
+        data.unreachable_host = True
+        return deployed
+
+    ports_to_check = (443, 465)
+    for port in ports_to_check:
+        # do the cert dance here - hack for now
+
+        # openssl has a longish timeout, so check if port is even open before trying
+        pre_flight = f"""nc -vzw 2 {host} {port}"""
+        try:
+            subprocess.run(  # nosec B603  we know what we're doing -- HAH!
+                pre_flight.split(), capture_output=True, check=True, text=True
+            )
+        except subprocess.CalledProcessError as error:
+            # couldn't connect - figure out why
+            # There are several reasons we won't have a current date:
+            #   - host not in DNS
+            #   - host not reachable from net, but still in production
+            #   - host decommissioned
+            if "timed out" in error.stderr:
+                # we couldn't open the port, but the name did resolve
+                logger.info(
+                    f"skipping unopened port {port} on {host}",
+                )
+                continue
+            elif "getaddrinfo for host" in error.stderr:
+                # can't resolve name
+                logger.info(
+                    f"skipping unreachable host {host}",
+                )
+                data.unreachable_host = True
+                break
+        # command to get expiration time of installed cert - must be valid shell line (i.e. escape newlines)
+        # Yes, we're going to run a subprocess with shell=True, but only on data we supply
+        cmd = f"""/bin/echo \
+                    | openssl 2>/dev/null  s_client -servername {host} -connect {host}:{port}  \
+                    | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p'  \
+                    | openssl x509 -in - -'noout' -text \
+                    | grep -E '(Not After ):' \
+                    | cut -d: -f2-\
+                """
+        global _current_seed
+        logger.debug(f"Checking for deployed cert on {host}:{port} ({_current_seed})")
+        code = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            shell=True,  # nosec B602
+            text=True,
+            input=None,
+            stderr=subprocess.DEVNULL,
+        )
+        if code.returncode == 0 and code.stdout.strip():
+            # got valid data - convert to date & check against warning date
+            expiration_date = datetime.strptime(
+                code.stdout.strip(), "%b %d %H:%M:%S %Y %Z"
+            )
+            deployed = expiration_date.date() > warning_date
+            logger.debug(f"{host}:{port} has renewal cert deployed: {deployed}")
+            break
+
+    data.renewal_deployed = deployed
+    return deployed
+
+
+def check_for_deployments(
+    possible_expirations: StatusByName, debug: bool = False
+) -> None:
+    for summary in possible_expirations.cert_statuses.values():
+        if summary.renewal_needed:
+            cert_deployed(summary, possible_expirations.warning_date, debug=debug)
+
+
+# compute summaries
+def compute_summaries(possible_expirations: StatusByName, certs_found: int = 0):
+    cert_count: dict = DefaultDict(int)
+    global host_count
+    expiring_count = (
+        reissued_count
+    ) = validity_invalid_count = deployed_count = assumed_count = 0
+    for cert, summary in possible_expirations.cert_statuses.items():
+        cert_count[cert] += 1
+        if summary.renewal_needed:
+            expiring_count += 1
+            if summary.renewal_issued:
+                reissued_count += 1
+            if summary.renewal_deployed:
+                deployed_count += 1
+            if summary.renewal_deployed and summary.unreachable_host:
+                assumed_count += 1
+        if summary.validity_too_long:
+            validity_invalid_count += 1
+
+    print(f"{certs_found:5} certs processed")
+    print(f"{len(host_count):5} hosts examined")
+    print(f"{expiring_count:5} certs expiring within time window")
+    print(f"{reissued_count:5} of expired certs already reissued per CT logs")
+    print(
+        f"{deployed_count:5} of reissued certs already deployed ({deployed_count-assumed_count} by inspection)"
+    )
+    print(f"{validity_invalid_count:5} certs unusable as issued for too long")
+
+
+def report_un_deployed(status: Optional[StatusByName], dig_it: bool = False):
+    # Output non-reissued ones
+    problem_count = 0
+    if status:
+        for cert in sorted(
+            status.cert_statuses.values(), key=lambda c: min(c.expirations)
+        ):
+            if cert.renewal_needed and not cert.renewal_deployed:
+                problem_count += 1
+                # We want to print the expiration date for the cert now
+                # deployed, if we could verify it.
+                # if we can't verify, then we **assume** latest expiration is corrent,
+                # unless cert has been re-issued, then we want the date before that
+                # (remember there can be precerts in the list, so de-dupe)
+                sorted_expirations = sorted(set(cert.expirations))
+                index = -1 + (cert.renewal_issued and -1 or 0)
+                current_expiration = (
+                    cert.current_deployed_expiration
+                    and cert.current_deployed_expiration.date().isoformat()
+                ) or sorted_expirations[index]
+                deployment_status = (
+                    (cert.unreachable_host and "unreachable")
+                    or (cert.common_name.startswith("*") and "wildcard")
+                    or (cert.renewal_deployed and " is" or "not") + " deployed"
+                )
+                print(
+                    f"{current_expiration} expiration: {cert.renewal_issued and 're-' or 'not ':>4}issued, {deployment_status}: {cert.common_name} ({cert.issuer})"
+                )
+                # hack to see if handled by "refactr"
+                if cert.renewal_issued and dig_it:
+                    subprocess.run(  # nosec B603
+                        f"dig {cert.common_name} +short".split()
+                    )
+    print(f"found {problem_count} hosts with expiring certs to check further.")
+
+
+# we need a singleton
+_exception_data: dict[str, Any] = {}
+
+
+# hack to filter out "not ours" from SAN cert
+_current_seed: str = ""
+
+
+def host_of_interest(host: str, exceptions: Optional[Path] = None) -> bool:
+    global _exception_data
+    # first call is from outermost loop, where exceptions is provided
+    # nested calls don't have (or need) access to argument
+    if not len(_exception_data) and exceptions:
+        try:
+            exception_data = yaml.safe_load(open(exceptions))
+        except OSError as e:
+            logger.warning(f"Couldn't open '{exceptions}', no exceptions will be used")
+            _exception_data["hosts_to_skip"] = set()
+            _exception_data["domains_to_skip"] = set()
+            _exception_data["file_name"] = "no-exceptions-file-found"
+            _exception_data["reported"] = set()
+        else:
+            _exception_data["hosts_to_skip"] = {
+                x["hostname"] for x in exception_data["hosts_to_skip"]
+            }
+            _exception_data["domains_to_skip"] = {
+                x["domain"] for x in exception_data["domains_to_skip"]
+            }
+            _exception_data["file_name"] = exceptions.name
+            _exception_data["reported"] = set()
+
+    # host may not be a match for current seed if it came from SAN cert
+    if _current_seed not in host:
+        # logger.debug(f'Skipping {host} for not matching "{_current_seed}"')
+        return False
+    # Now check if it matches exception criteria
+    # TODO: split each ignore reason, so we can tell why
+    ignore = (
+        host.endswith(tuple(_exception_data["domains_to_skip"]))
+        or host in _exception_data["hosts_to_skip"]
+    )
+    if ignore and not host in _exception_data["reported"]:
+        logger.info(f'ignoring host {host} per {_exception_data["file_name"]}')
+        # TODO: save off exemption type with host
+        _exception_data["reported"].add(host)
+    return not ignore
+
+
+def main(
+    domain: list[str] = typer.Argument(None),
+    weeks: int = 3,
+    deploy_check: bool = True,
+    verbose: bool = False,
+    debug: bool = False,
+    in_file: Path = typer.Option(None, help="Path to file with host names to check"),
+    exceptions: Path = typer.Option(
+        default="exceptions.yaml", help="Path to exceptions file"
+    ),
+    config_dir: Path = typer.Option(
+        default=".", help="Path Prefix of exceptions & in-file"
+    ),
+    dig_it: bool = False,
+    generate_schema: bool = False,
+):
+    # parameter implications
+    if debug:
+        verbose = True
+
+    # handle single shot options
+    if generate_schema:
+        print(Exceptions.schema_json(indent=2))
+        raise typer.Exit()
+
+    # prepend the config dir
+    if config_dir != Path("."):
+        in_file = config_dir / in_file
+        exceptions = config_dir / exceptions
+
+    # get list of domains to check
+    if in_file:
+        try:
+            domain = open(in_file).read().split()
+        except FileNotFoundError as e:
+            msg = f"--in-file value does not exist: '{in_file}'"
+            logger.error(msg)
+            typer.echo(msg)
+            raise typer.Exit(3)
+    if not len(domain):
+        typer.echo("No domains supplied.")
+        raise typer.Exit(code=3)
+    # derived values
+    today = date(*time.gmtime(time.time())[:3])
+    warning_date = today + timedelta(weeks=weeks)
+    manual_checks_needed: StatusByName = StatusByName(warning_date)
+    msg = f"Checking for certs that won't be valid on {warning_date.isoformat()}"
+    print(msg)
+    logger.info(msg)
+
+    # start real processing
+    global _current_seed
+    certs_found = 0
+    for host in domain:
+        logger.info(f"Starting on seed '{host}'")
+        _current_seed = host
+        try:
+            if not host_of_interest(host, exceptions):
+                continue
+            response = fetch_data(host)
+        except Exception as e:
+            logger.warning(f"Skipping {host}, error {repr(e)}")
+            continue
+        table = extract_data_from_page(resp=response, domain=host)
+        if table:
+            info = extract_cert_data(table, host, debug=debug)
+            certs_found += len(info)
+            possible_expirations = find_potentially_expiring_certs(
+                info, warning_date, exception_file=exceptions
+            )
+            check_for_deployments(possible_expirations, debug=debug)
+            manual_checks_needed += possible_expirations
+    if manual_checks_needed:
+        if verbose:
+            compute_summaries(manual_checks_needed, certs_found=certs_found)
+        report_un_deployed(manual_checks_needed, dig_it)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level="DEBUG",
+        format="%(asctime)s %(name)-6s %(levelname)-6s %(message)s",
+    )
+    # except for urllib3, where we only want WARNING
+    logging.getLogger("urllib3").setLevel("WARNING")
+    logging.getLogger("charset_normalizer").setLevel("WARNING")  # from cryptography
+
+    # typer does not return
+    typer.run(main)

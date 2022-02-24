@@ -1,0 +1,15 @@
+bs4
+cryptography
+pydantic
+requests
+types-requests
+typer
+types-PyYaml
+PyYaml
+
+# needed for dev
+pip-tools
+
+# needed for vscode linters
+bandit
+mypy
