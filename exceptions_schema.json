@@ -1,0 +1,88 @@
+{
+  "title": "Exceptions",
+  "type": "object",
+  "properties": {
+    "domains_to_skip": {
+      "title": "Domains To Skip",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DomainException"
+      }
+    },
+    "hosts_to_skip": {
+      "title": "Hosts To Skip",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HostException"
+      }
+    }
+  },
+  "definitions": {
+    "DomainException": {
+      "title": "DomainException",
+      "type": "object",
+      "properties": {
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "notes": {
+          "title": "Notes",
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain"
+      ]
+    },
+    "DecomState": {
+      "title": "DecomState",
+      "description": "Distinguish between ways a host can (no longer) be accessed.",
+      "enum": [
+        "Decommissioned",
+        "Not on public net",
+        "active",
+        "unspecified"
+      ],
+      "type": "string"
+    },
+    "HostException": {
+      "title": "HostException",
+      "type": "object",
+      "properties": {
+        "hostname": {
+          "title": "Hostname",
+          "type": "string"
+        },
+        "bug": {
+          "title": "Bug",
+          "minLength": 1,
+          "maxLength": 65536,
+          "format": "uri",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/DecomState"
+        },
+        "current_cert_expiration": {
+          "title": "Current Cert Expiration",
+          "type": "string",
+          "format": "date"
+        },
+        "notes": {
+          "title": "Notes",
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostname",
+        "state",
+        "current_cert_expiration"
+      ]
+    }
+  }
+}
