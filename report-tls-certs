@@ -524,7 +524,8 @@ def main(
 
     # prepend the config dir
     if config_dir != Path("."):
-        in_file = config_dir / in_file
+        if in_file:
+            in_file = config_dir / in_file
         exceptions = config_dir / exceptions
 
     # get list of domains to check
@@ -580,6 +581,7 @@ if __name__ == "__main__":
         level="DEBUG",
         format="%(asctime)s %(name)-6s %(levelname)-6s %(message)s",
     )
+    logger.info(f"logging at level {logger.getEffectiveLevel()}")
     # except for urllib3, where we only want WARNING
     logging.getLogger("urllib3").setLevel("WARNING")
     logging.getLogger("charset_normalizer").setLevel("WARNING")  # from cryptography
