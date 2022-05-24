@@ -1,0 +1,5 @@
+# needed for dev
+pip-tools
+
+# and production, of course
+-c requirements.txt

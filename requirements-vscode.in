@@ -1,0 +1,6 @@
+# needed for vscode linters
+bandit
+mypy
+
+# and normal dev
+-c requirements-dev.txt
