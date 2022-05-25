@@ -18,6 +18,7 @@ import pydantic
 import requests
 import typer
 import yaml
+import json
 from custom_requests import http
 from pydantic import BaseModel
 
@@ -384,7 +385,9 @@ def check_for_deployments(
 
 
 # compute summaries
-def compute_summaries(possible_expirations: StatusByName, certs_found: int = 0):
+def compute_summaries(
+    possible_expirations: StatusByName, certs_found: int = 0, json_output: bool = False
+):
     cert_count: dict = DefaultDict(int)
     global host_count
     expiring_count = (
@@ -403,19 +406,23 @@ def compute_summaries(possible_expirations: StatusByName, certs_found: int = 0):
         if summary.validity_too_long:
             validity_invalid_count += 1
 
-    print(f"{certs_found:5} certs processed")
-    print(f"{len(host_count):5} hosts examined")
-    print(f"{expiring_count:5} certs expiring within time window")
-    print(f"{reissued_count:5} of expired certs already reissued per CT logs")
-    print(
-        f"{deployed_count:5} of reissued certs already deployed ({deployed_count-assumed_count} by inspection)"
-    )
-    print(f"{validity_invalid_count:5} certs unusable as issued for too long")
+    if not json_output:
+        print(f"{certs_found:5} certs processed")
+        print(f"{len(host_count):5} hosts examined")
+        print(f"{expiring_count:5} certs expiring within time window")
+        print(f"{reissued_count:5} of expired certs already reissued per CT logs")
+        print(
+            f"{deployed_count:5} of reissued certs already deployed ({deployed_count-assumed_count} by inspection)"
+        )
+        print(f"{validity_invalid_count:5} certs unusable as issued for too long")
 
 
-def report_un_deployed(status: Optional[StatusByName], dig_it: bool = False):
+def report_un_deployed(
+    status: Optional[StatusByName], dig_it: bool = False, json_output: bool = False
+):
     # Output non-reissued ones
     problem_count = 0
+    problem_certs: list = []
     if status:
         for cert in sorted(
             status.cert_statuses.values(), key=lambda c: min(c.expirations)
@@ -432,21 +439,34 @@ def report_un_deployed(status: Optional[StatusByName], dig_it: bool = False):
                 current_expiration = (
                     cert.current_deployed_expiration
                     and cert.current_deployed_expiration.date().isoformat()
-                ) or sorted_expirations[index]
+                ) or sorted_expirations[index].isoformat()
                 deployment_status = (
                     (cert.unreachable_host and "unreachable")
                     or (cert.common_name.startswith("*") and "wildcard")
                     or (cert.renewal_deployed and " is" or "not") + " deployed"
                 )
-                print(
-                    f"{current_expiration} expiration: {cert.renewal_issued and 're-' or 'not ':>4}issued, {deployment_status}: {cert.common_name} ({cert.issuer})"
-                )
+                if json_output:
+                    d = {
+                        "current_expiration": current_expiration,
+                        "renewal_issued": cert.renewal_issued,
+                        "deployment_status": deployment_status,
+                        "common_name": cert.common_name,
+                        "issuer": cert.issuer,
+                    }
+                    problem_certs.append(d)
+                else:
+                    print(
+                        f"{current_expiration} expiration: {cert.renewal_issued and 're-' or 'not ':>4}issued, {deployment_status}: {cert.common_name} ({cert.issuer})"
+                    )
                 # hack to see if handled by "refactr"
                 if cert.renewal_issued and dig_it:
                     subprocess.run(  # nosec B603
                         f"dig {cert.common_name} +short".split()
                     )
-    print(f"found {problem_count} hosts with expiring certs to check further.")
+    if json_output:
+        print(json.dumps(problem_certs))
+    else:
+        print(f"found {problem_count} hosts with expiring certs to check further.")
 
 
 # we need a singleton
@@ -512,6 +532,7 @@ def main(
     ),
     dig_it: bool = False,
     generate_schema: bool = False,
+    json: bool = False,
 ):
     # parameter implications
     if debug:
@@ -572,8 +593,10 @@ def main(
             manual_checks_needed += possible_expirations
     if manual_checks_needed:
         if verbose:
-            compute_summaries(manual_checks_needed, certs_found=certs_found)
-        report_un_deployed(manual_checks_needed, dig_it)
+            compute_summaries(
+                manual_checks_needed, certs_found=certs_found, json_output=json
+            )
+        report_un_deployed(manual_checks_needed, dig_it, json)
 
 
 if __name__ == "__main__":
