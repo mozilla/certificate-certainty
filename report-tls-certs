@@ -572,25 +572,30 @@ def main(
     # start real processing
     global _current_seed
     certs_found = 0
-    for host in domain:
-        logger.info(f"Starting on seed '{host}'")
-        _current_seed = host
-        try:
-            if not host_of_interest(host, exceptions):
+    try:
+        for host in domain:
+            logger.info(f"Starting on seed '{host}'")
+            _current_seed = host
+            try:
+                if not host_of_interest(host, exceptions):
+                    continue
+                response = fetch_data(host)
+            except Exception as e:
+                logger.warning(f"Skipping {host}, error {repr(e)}")
                 continue
-            response = fetch_data(host)
-        except Exception as e:
-            logger.warning(f"Skipping {host}, error {repr(e)}")
-            continue
-        table = extract_data_from_page(resp=response, domain=host)
-        if table:
-            info = extract_cert_data(table, host, debug=debug)
-            certs_found += len(info)
-            possible_expirations = find_potentially_expiring_certs(
-                info, warning_date, exception_file=exceptions
-            )
-            check_for_deployments(possible_expirations, debug=debug)
-            manual_checks_needed += possible_expirations
+            table = extract_data_from_page(resp=response, domain=host)
+            if table:
+                info = extract_cert_data(table, host, debug=debug)
+                certs_found += len(info)
+                possible_expirations = find_potentially_expiring_certs(
+                    info, warning_date, exception_file=exceptions
+                )
+                check_for_deployments(possible_expirations, debug=debug)
+                manual_checks_needed += possible_expirations
+    except KeyboardInterrupt:
+        # treat as normal loop end
+        logger.warning("Received KeyboardInterupt, stopping scan early")
+        pass
     if manual_checks_needed:
         if verbose:
             compute_summaries(

@@ -3,6 +3,7 @@
 
 import requests
 from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
 ############################################################
 #
@@ -40,14 +41,12 @@ http = requests.Session()
 #
 ############################################################
 
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 
 retry_strategy = Retry(
     total=10,
     status_forcelist=[429, 500, 502, 503, 504],
     method_whitelist=["HEAD", "GET", "OPTIONS"],
-    backoff_factor=10,
+    backoff_factor=0.1,
 )
 # adapter = HTTPAdapter(max_retries=retry_strategy)
 http = requests.Session()
@@ -55,4 +54,4 @@ http.mount("https://", TimeoutHTTPAdapter(max_retries=retry_strategy))
 http.mount("http://", TimeoutHTTPAdapter(max_retries=retry_strategy))
 
 
-http.mount("https://", TimeoutHTTPAdapter(max_retries=retry_strategy))
+# http.mount("https://", TimeoutHTTPAdapter(max_retries=retry_strategy))
