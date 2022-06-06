@@ -10,7 +10,7 @@ from requests.packages.urllib3.util.retry import Retry
 #  Setup Default Timeout
 #
 ############################################################
-DEFAULT_TIMEOUT = 10  # seconds
+DEFAULT_TIMEOUT = 5  # seconds
 
 
 class TimeoutHTTPAdapter(HTTPAdapter):
@@ -28,13 +28,6 @@ class TimeoutHTTPAdapter(HTTPAdapter):
         return super().send(request, **kwargs)
 
 
-http = requests.Session()
-
-# Mount it for both http and https usage
-# timeout_adapter = TimeoutHTTPAdapter(timeout=2.5)
-# http.mount("https://", adapter)
-# http.mount("http://", adapter)
-
 ############################################################
 #
 #  Set up default retry
@@ -43,15 +36,12 @@ http = requests.Session()
 
 
 retry_strategy = Retry(
-    total=10,
+    total=3,
     status_forcelist=[429, 500, 502, 503, 504],
     method_whitelist=["HEAD", "GET", "OPTIONS"],
-    backoff_factor=0.1,
+    backoff_factor=1,
 )
 # adapter = HTTPAdapter(max_retries=retry_strategy)
 http = requests.Session()
 http.mount("https://", TimeoutHTTPAdapter(max_retries=retry_strategy))
 http.mount("http://", TimeoutHTTPAdapter(max_retries=retry_strategy))
-
-
-# http.mount("https://", TimeoutHTTPAdapter(max_retries=retry_strategy))

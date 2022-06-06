@@ -80,6 +80,7 @@ class Exceptions(BaseModel):
 def fetch_data(domain: str):
     url = f"https://crt.sh/?dNSName={domain}&exclude=expired&deduplicate=Y"
     resp = http.get(url)
+    logger.debug(f"fetched: {domain}, result {resp.ok}")
     if not resp.ok:
         raise requests.exceptions.HTTPError(
             f"skipping {url}, code {resp.status_code}, after retries",
@@ -537,6 +538,8 @@ def main(
     # parameter implications
     if debug:
         verbose = True
+    else:
+        logging.getLogger().setLevel("WARNING")
 
     # handle single shot options
     if generate_schema:
@@ -566,7 +569,8 @@ def main(
     warning_date = today + timedelta(weeks=weeks)
     manual_checks_needed: StatusByName = StatusByName(warning_date)
     msg = f"Checking for certs that won't be valid on {warning_date.isoformat()}"
-    print(msg)
+    if not json:
+        print(msg)
     logger.info(msg)
 
     # start real processing
@@ -610,7 +614,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(name)-6s %(levelname)-6s %(message)s",
     )
     logger.info(f"logging at level {logger.getEffectiveLevel()}")
-    # except for urllib3, where we only want WARNING
+    # except for external libraries, where we only want WARNING
     logging.getLogger("urllib3").setLevel("WARNING")
     logging.getLogger("charset_normalizer").setLevel("WARNING")  # from cryptography
 

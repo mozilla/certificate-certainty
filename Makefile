@@ -2,6 +2,11 @@
 REQUIREMENT_SOURCE_FILES := $(shell ls requirements*.in)
 REQUIREMENT_FILES := $(REQUIREMENT_SOURCE_FILES:.in=.txt)
 
+gitrev := $(shell git rev-parse --short=10 HEAD)
+VENV_NAME := venv
+now := $(shell date --utc +%Y%m%dT%H%MZ)
+github3_version:=1.1.0-$(now)-$(gitrev)
+image_to_use := offboard-slim
 
 .DEFAULT: help
 
@@ -15,7 +20,7 @@ help:
 # set up dev environment
 check_venv:
 ifeq ($(VIRTUAL_ENV),)
-	$(error "Run frost from a virtualenv (try 'make install && source venv/bin/activate')")
+	$(error "Run from a virtualenv (try 'make install && source venv/bin/activate')")
 endif
 
 install: venv requirements.txt
