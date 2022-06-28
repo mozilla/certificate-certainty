@@ -10,7 +10,7 @@ gitdb==4.0.9
     # via gitpython
 gitpython==3.1.27
     # via bandit
-mypy==0.950
+mypy==0.961
     # via -r requirements-vscode.in
 mypy-extensions==0.4.3
     # via mypy
