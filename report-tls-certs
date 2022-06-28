@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from hashlib import new
+import json
 import logging
 from operator import is_
 import socket
@@ -10,7 +11,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from enum import Enum, unique
 from pathlib import Path
-from typing import Any, Optional
+import sys
+from typing import Any, Iterable, Optional
 
 import bs4
 from cryptography import x509
@@ -18,9 +20,11 @@ import pydantic
 import requests
 import typer
 import yaml
-import json
-from custom_requests import http
 from pydantic import BaseModel
+from custom_requests import http
+
+# TODO: put into __init__ file and managed by a tool
+__version__ = "0.1.0"
 
 # TODO: replace openssl calls with native tls calls
 
@@ -222,7 +226,7 @@ def extract_all_hosts(table_data: dict) -> set[HostCertData]:
             # we know default needs modification, so remove it from the set
             hosts = set()
             for dns_name in san.get_values_for_type(x509.DNSName):
-                if host_of_interest(dns_name):
+                if host_of_interest(dns_name, certID=cert_id):
                     host_count[dns_name] += 1
                     host_cert = HostCertData(**table_data, cert_type="SAN")
                     host_cert.host_names.add(dns_name)
@@ -272,7 +276,7 @@ def certificate_of_interest(entry: HostCertData) -> bool:
     cert_of_interest = False
     if entry.host_names:
         for host in entry.host_names:
-            if host_of_interest(host):
+            if host_of_interest(host, certID=entry.crt_sh_id):
                 cert_of_interest = True
                 break
     if not cert_of_interest:
@@ -483,9 +487,21 @@ def report_un_deployed(
                         f"dig {cert.common_name} +short".split()
                     )
     if json_output:
-        print(json.dumps(list(problem_certs)))
+        output_json(list(problem_certs))
     else:
         print(f"found {problem_count} hosts with expiring certs to check further.")
+
+
+def output_json(data: list, output_to=None) -> None:
+    if not output_to:
+        output_to = sys.stdout
+
+    j = {
+        "metadata": {"app_version": __version__, "json_schema_revision": "1"},
+        "data": data,
+    }
+
+    output_to.writelines(json.dumps(j))
 
 
 # we need a singleton
@@ -496,13 +512,15 @@ _exception_data: dict[str, Any] = {}
 _current_seed: str = ""
 
 
-def host_of_interest(host: str, exceptions: Optional[Path] = None) -> bool:
+def host_of_interest(
+    host: str, exceptions: Optional[Path] = None, certID: int = 0
+) -> bool:
     global _exception_data
     # first call is from outermost loop, where exceptions is provided
     # nested calls don't have (or need) access to argument
     if not len(_exception_data) and exceptions:
         try:
-            exception_data = yaml.safe_load(open(exceptions))
+            _exception_data = yaml.safe_load(open(exceptions))
         except OSError as e:
             logger.warning(f"Couldn't open '{exceptions}', no exceptions will be used")
             _exception_data["hosts_to_skip"] = set()
@@ -511,17 +529,17 @@ def host_of_interest(host: str, exceptions: Optional[Path] = None) -> bool:
             _exception_data["reported"] = set()
         else:
             _exception_data["hosts_to_skip"] = {
-                x["hostname"] for x in exception_data["hosts_to_skip"]
+                x["hostname"] for x in _exception_data["hosts_to_skip"]
             }
             _exception_data["domains_to_skip"] = {
-                x["domain"] for x in exception_data["domains_to_skip"]
+                x["domain"] for x in _exception_data["domains_to_skip"]
             }
             _exception_data["file_name"] = exceptions.name
             _exception_data["reported"] = set()
 
     # host may not be a match for current seed if it came from SAN cert
     if _current_seed not in host:
-        # logger.debug(f'Skipping {host} for not matching "{_current_seed}"')
+        logger.debug(f'Skipping {host} for not matching "{_current_seed}" ({certID}')
         return False
     # Now check if it matches exception criteria
     # TODO: split each ignore reason, so we can tell why
