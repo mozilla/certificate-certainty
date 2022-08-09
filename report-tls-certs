@@ -8,7 +8,7 @@ import socket
 import subprocess  # nosec B404
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum, unique
 from pathlib import Path
 import sys
@@ -497,7 +497,11 @@ def output_json(data: list, output_to=None) -> None:
         output_to = sys.stdout
 
     j = {
-        "metadata": {"app_version": __version__, "json_schema_revision": "1"},
+        "metadata": {
+            "app_version": __version__,
+            "json_schema_revision": "1",
+            "collection_ended": datetime.now(timezone.utc).isoformat(),
+        },
         "data": data,
     }
 
