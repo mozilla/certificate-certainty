@@ -41,4 +41,7 @@ exceptions_schema.json: report-tls-certs
 
 # local build rules
 %.txt: %.in
-	pip-compile --quiet $<
+	pip-compile --quiet --generate-hashes $<
+
+requirements-dev.in: requirements.txt
+requirements-vscode.in: requirements-dev.txt

@@ -4,3 +4,4 @@ mypy
 
 # and normal dev
 -c requirements-dev.txt
+-r requirements-dev.txt
