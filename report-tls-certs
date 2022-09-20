@@ -7,6 +7,7 @@ from operator import is_
 import socket
 import subprocess  # nosec B404
 import time
+import urllib3
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum, unique
@@ -209,9 +210,12 @@ def extract_all_hosts(table_data: dict) -> set[HostCertData]:
     try:
         cert_response = http.get(url=url)
     except (
-        requests.exceptions.SSLError,
+        requests.exceptions.ConnectionError,
         requests.exceptions.RetryError,
+        requests.exceptions.SSLError,
         socket.timeout,
+        urllib3.exceptions.MaxRetryError,
+        urllib3.exceptions.ReadTimeoutError,
     ) as e:
         msg = f"Skipping cert SAN check for certificate id {cert_id}; host {row_data.common_name} ({repr(e)})"
         logger.error(msg)
@@ -655,7 +659,7 @@ if __name__ == "__main__":
         level="DEBUG",
         format="%(asctime)s %(name)-6s %(levelname)-6s %(message)s",
     )
-    logger.info(f"logging at level {logger.getEffectiveLevel()}")
+    # logger.info(f"logging at level {logger.getEffectiveLevel()}")
     # except for external libraries, where we only want WARNING
     logging.getLogger("urllib3").setLevel("WARNING")
     logging.getLogger("charset_normalizer").setLevel("WARNING")  # from cryptography
