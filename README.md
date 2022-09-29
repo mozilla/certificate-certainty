@@ -71,5 +71,14 @@ $ ./report-tls-certs --generate-schema >exceptions_schema.json
 ```
 Hopefully, you're using an editor that can make use of the schema.
 
+# Deployment
+
+The script can be deployed in a docker container. (For Mozilla use, the docker
+container is defined elsewhere, as it includes Mozilla specific data.)
+
+**N.B.:** the tool is built atop typer, which can exhibit odd behavior if not
+connected to a PTY. Use the `--tty` option to the `docker run` command to avoid
+this.
+
 
 [pydantic]: https://pydantic-docs.helpmanual.io/
