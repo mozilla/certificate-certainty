@@ -3,6 +3,7 @@ cryptography
 google-cloud-storage
 pydantic
 requests
+simplematch
 types-requests
 typer
 types-PyYaml

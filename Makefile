@@ -43,5 +43,5 @@ exceptions_schema.json: report-tls-certs
 %.txt: %.in
 	pip-compile --quiet --generate-hashes $<
 
-requirements-dev.in: requirements.txt
-requirements-vscode.in: requirements-dev.txt
+requirements-dev.txt: requirements.txt
+requirements-vscode.txt: requirements-dev.txt
