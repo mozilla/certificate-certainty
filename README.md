@@ -89,8 +89,8 @@ host to terminate on container termination is not as-obvious-as-I-thought.
 Here's the solution used here.
 
 1. Create your container to:
-  - Not use "ENTRYPOINT" in the Dockerfile
-  - Use "CMD" to specify default behavior
+   - Not use "ENTRYPOINT" in the Dockerfile
+   - Use "CMD" to specify default behavior
 2. Use [GCP
    process](https://cloud.google.com/compute/docs/containers/deploying-containers#deploying_a_container_on_a_new_vm_instance)
    to create a Container-Optimized OS VM configured to deploy your container,
@@ -133,14 +133,11 @@ set -x
 
 # Send logs to GCP {{{
 config_file=/etc/docker/daemon.json
-if ! test -r $config_file; then
-    echo {} >$config_file
-fi
 # we want to overwrite the config -- the existing values conflict
 echo '{"log-driver":"gcplogs"}' > $config_file
 # Send logs to GCP }}}
 
-# Make sure it's running.
+# Make sure dockerd is running.
 systemctl restart docker
 # wait for docker to be operational
 while !docker ps &>/dev/null; do
@@ -148,13 +145,13 @@ while !docker ps &>/dev/null; do
 done
 
 # Do the real run
-docker run --rm -t $DOCKER_IMAGE
+docker run --rm -t $DOCKER_IMAGE; ec=$?
 date --iso=sec --utc
 
 # if we had an error, hang around so folks can ssh in
 if [[ $ec -ne 0 ]] ; then
     echo "waiting 8 hours for ssh session"
-    sleep  28800 (8 hours)
+    sleep  28800 # 60 * 60 * 8
     echo "done waiting"
 fi
 # wait for things to calm down, then shutdown
