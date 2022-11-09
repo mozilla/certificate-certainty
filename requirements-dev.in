@@ -1,0 +1,6 @@
+# include production, of course
+-c requirements.txt
+-r requirements.txt
+
+# needed for dev
+pip-tools

@@ -71,5 +71,92 @@ $ ./report-tls-certs --generate-schema >exceptions_schema.json
 ```
 Hopefully, you're using an editor that can make use of the schema.
 
+# Deployment
+
+The script can be deployed in a docker container. (For Mozilla use, the docker
+container is defined elsewhere, as it includes Mozilla specific data.)
+
+**N.B.:** the tool is built atop typer, which can exhibit odd behavior if not
+connected to a PTY. Use the `--tty` option to the `docker run` command to avoid
+this.
+
+## GCP tips
+
+This job can take a long time with many domains (hours - my runs take about 14
+hours). The choke point is responsiveness of `crt.sh` site, so mutithreading
+does not help, nor does horizontal scaling. Getting a long running container's
+host to terminate on container termination is not as-obvious-as-I-thought.
+Here's the solution used here.
+
+1. Create your container to:
+   - Not use "ENTRYPOINT" in the Dockerfile
+   - Use "CMD" to specify default behavior
+2. Use [GCP
+   process](https://cloud.google.com/compute/docs/containers/deploying-containers#deploying_a_container_on_a_new_vm_instance)
+   to create a Container-Optimized OS VM configured to deploy your container,
+   with the following options:
+    - In the Container section, override the default run command with a
+      quick-to-execute command. I use `date`.
+    - In the "Custom metadata" section, add a "startup-script" (example below).
+      This script will run the container to do the real work, then terminate the
+      instance.
+
+This approach minimizes the custom code and permission hacks needed to use other
+approaches. The blockers I hit included:
+- configuring the VM to have the correct permissions to allow a `docker pull`
+  for images in GAR.
+  - Container-Optimized OS images do not have the stock `gauth` or `gcloud`
+    tools installed. Nor do they have user accessible package mangers to install
+    those tools (they are Chrome OS).
+- non-cloud optimized base images do not come with docker installed. Yes, that's
+  doable in the `startup-script`, but (a) why? and (b) you'll still have
+  permission hurdles if your image is stored in GAR.
+
+### startup-script example
+
+N.B. the startup script runs as root. In this case there is little security to
+be gained by creating a non-root user to invoke the container.
+
+```bash
+#!/bin/bash
+# This script should be set as the boot script for VM on GCP
+
+DOCKER_IMAGE=us-central1-docker.pkg.dev/hwine-cc-dev/certificate-certainty/busybox:latest
+
+# It will:
+#   - configure docker to send logs to GCP logging
+#   - start docker
+#   - run the hardcoded container
+#   - exit, stopping the VM
+
+set -x
+
+# Send logs to GCP {{{
+config_file=/etc/docker/daemon.json
+# we want to overwrite the config -- the existing values conflict
+echo '{"log-driver":"gcplogs"}' > $config_file
+# Send logs to GCP }}}
+
+# Make sure dockerd is running.
+systemctl restart docker
+# wait for docker to be operational
+while !docker ps &>/dev/null; do
+  sleep 10
+done
+
+# Do the real run
+docker run --rm -t $DOCKER_IMAGE; ec=$?
+date --iso=sec --utc
+
+# if we had an error, hang around so folks can ssh in
+if [[ $ec -ne 0 ]] ; then
+    echo "waiting 8 hours for ssh session"
+    sleep  28800 # 60 * 60 * 8
+    echo "done waiting"
+fi
+# wait for things to calm down, then shutdown
+sleep 60
+/sbin/shutdown -h +1
+```
 
 [pydantic]: https://pydantic-docs.helpmanual.io/

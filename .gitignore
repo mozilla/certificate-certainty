@@ -1,0 +1,9 @@
+# Project specific exclusions
+logs/
+notes_*/
+*_notes/
+*.crt
+venv/
+.*
+
+# General Python exclusions
