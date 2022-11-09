@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 
-from hashlib import new
 import json
 import logging
-from operator import is_
 import socket
 import subprocess  # nosec B404
+import sys
 import time
-import urllib3
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum, unique
+from hashlib import new
+from operator import is_
 from pathlib import Path
-import sys
 from typing import Any, Iterable, Optional
 
 import bs4
-from cryptography import x509
 import pydantic
 import requests
 import typer
+import urllib3
 import yaml
+from cryptography import x509
 from pydantic import BaseModel
+
 from custom_requests import http
 
 # TODO: put into __init__ file and managed by a tool
@@ -47,6 +48,12 @@ logger = logging.getLogger(__name__)
 host_count: dict = defaultdict(int)
 
 
+# The classes defined below are all used as data structures.
+#
+# Many are Pydantic classes, which allows us to get a JSON schema for the structures.
+# Pydantic models also will throw errors if any of our assumptions about input
+# data become invalid (we are scraping a 3rd party service over which we have
+# no control.)
 @unique
 class DecomState(str, Enum):
     """Distinguish between ways a host can (no longer) be accessed."""
@@ -63,7 +70,13 @@ class DecomState(str, Enum):
 #   decom state
 
 
-class HostException(BaseModel):
+# *Exemption records define cases where we do not want to report as needing
+# attention. These are intended to capture business, not technical, decisions,
+# such as:
+#   - a host for a service that has been decommissioned (but the cert may live for another year)
+#   - a domain for ephemeral hosts
+# Exemptions are maintained in an external yaml file
+class HostExemption(BaseModel):
     hostname: str
     bug: Optional[pydantic.AnyHttpUrl]
     state: DecomState
@@ -71,17 +84,31 @@ class HostException(BaseModel):
     notes: str = ""
 
 
-class DomainException(BaseModel):
+class DomainExemption(BaseModel):
     domain: str
     notes: str = ""
 
 
-class Exceptions(BaseModel):
-    domains_to_skip: set[DomainException] = set()
-    hosts_to_skip: set[HostException] = set()
+class Exemptions(BaseModel):
+    domains_to_skip: set[DomainExemption] = set()
+    hosts_to_skip: set[HostExemption] = set()
 
 
+# Utilities to handle extracting CT data from our source (currently the website crt.sh)
 def fetch_data(domain: str):
+    """fetch_data return the web page with CT info for the specified domain.
+
+    Basically a wrapper around requests to implement the retry behavior we want
+
+    Args:
+        domain (str): Domain name to search for any subordinate certificates
+
+    Raises:
+        requests.exceptions.HTTPError: Failed to retrieve information
+
+    Returns:
+        response: web page response
+    """
     url = f"https://crt.sh/?dNSName={domain}&exclude=expired&deduplicate=Y"
     resp = http.get(url)
     logger.debug(f"fetched: {domain}, result {resp.ok}")
@@ -96,6 +123,18 @@ def fetch_data(domain: str):
 def extract_data_from_page(
     resp: requests.Response, domain: str
 ) -> Optional[bs4.element.Tag]:
+    """extract_data_from_page Find certificate info embedded in the page.
+
+    Locate & return the HTML `table` element with the certificate information.
+    Perform some basic sanity checking and error logging along the way.
+
+    Args:
+        resp (requests.Response): response object from query
+        domain (str): domain we searched for - only used in error message
+
+    Returns:
+        Optional[bs4.element.Tag]: The table object, or None
+    """
     soup = bs4.BeautifulSoup(resp.content, features="html.parser")
     table = soup.find_all("table")[-1]
     headers = [x.get_text(strip=True) for x in table.find_all("th")]
@@ -199,6 +238,22 @@ class StatusByName:
 
 
 def extract_all_hosts(table_data: dict) -> set[HostCertData]:
+    """extract_all_hosts Create data records for every relevant host in table.
+
+    The table contains certs which have at least one host that is a part of the
+    domain originally requested. Many certs will support multiple hosts, some
+    of which are not of interest to us. Examine each cert and create a record
+    for each host.
+
+
+    Args:
+        table_data (dict): A single row from the web page, as a dictionary
+        based on table column headers
+
+    Returns:
+        set[HostCertData]: Only those hosts that are a subdomain of the
+        `_current_seed`, and are not excluded by an exemption.
+    """
     # save the data from table as default, but will need modification in SAN case
     row_data: HostCertData = HostCertData(**table_data)
     hosts: set[HostCertData] = {row_data}
@@ -214,8 +269,8 @@ def extract_all_hosts(table_data: dict) -> set[HostCertData]:
         requests.exceptions.RetryError,
         requests.exceptions.SSLError,
         socket.timeout,
-        urllib3.exceptions.MaxRetryError,
-        urllib3.exceptions.ReadTimeoutError,
+        urllib3.exceptions.MaxRetryError,  # type: ignore -- linter error, code correct
+        urllib3.exceptions.ReadTimeoutError,  # type: ignore
     ) as e:
         msg = f"Skipping cert SAN check for certificate id {cert_id}; host {row_data.common_name} ({repr(e)})"
         logger.error(msg)
@@ -241,7 +296,7 @@ def extract_all_hosts(table_data: dict) -> set[HostCertData]:
             host_count[row_data.common_name] += 1
     else:
         logger.error(
-            f"Could not retrive {url}, status code {cert_response.status_code}."
+            f"Could not retrieve {url}, status code {cert_response.status_code}."
         )
     logger.debug(f"extract_all_hosts found {', '.join([x.common_name for x in hosts])}")
     return hosts
@@ -250,6 +305,18 @@ def extract_all_hosts(table_data: dict) -> set[HostCertData]:
 def extract_cert_data(
     table: bs4.element.Tag, domain: str, debug: bool = False
 ) -> set[HostCertData]:
+    """extract_cert_data _summary_
+
+    _extended_summary_
+
+    Args:
+        table (bs4.element.Tag): _description_
+        domain (str): _description_
+        debug (bool, optional): _description_. Defaults to False.
+
+    Returns:
+        set[HostCertData]: _description_
+    """ """"""
     cert_list: set[HostCertData] = set()
     table_row_count = 0
     for row in table.find_all("tr"):
@@ -293,7 +360,7 @@ def certificate_of_interest(entry: HostCertData) -> bool:
 def find_potentially_expiring_certs(
     info: set[HostCertData],
     warning_date: date,
-    exception_file: Optional[Path],
+    exemptions_file: Optional[Path],
 ) -> StatusByName:
 
     status = StatusByName(warning_date)
@@ -405,6 +472,17 @@ def check_for_deployments(
 def compute_summaries(
     possible_expirations: StatusByName, certs_found: int = 0, json_output: bool = False
 ):
+    """compute_summaries Count each type of problem.
+
+    Metric computations - no functional impact
+
+    TODO - return summary counts for use in JSON metadata
+
+    Args:
+        possible_expirations (StatusByName): All the problem certs
+        certs_found (int, optional): Count of all certs returned by data source. Defaults to 0.
+        json_output (bool, optional): Output to JSON? Defaults to False.
+    """
     cert_count: dict = defaultdict(int)
     global host_count
     expiring_count = (
@@ -445,6 +523,15 @@ class HashableDict(dict):
 def report_un_deployed(
     status: Optional[StatusByName], dig_it: bool = False, json_output: bool = False
 ):
+    """report_un_deployed Report those hosts which need intervention.
+
+    Each host may have multiple certs during renewal. Construct the needed actions based on the certs present, and format for output.
+
+    Args:
+        status (Optional[StatusByName]): hosts which have at least one cert expiring in the window
+        dig_it (bool, optional): _description_. Defaults to False.
+        json_output (bool, optional): Should output be formatted as JSON? Defaults to False.
+    """
     # Output non-reissued ones
     problem_count = 0
     problem_certs: set = set()
@@ -456,7 +543,7 @@ def report_un_deployed(
                 problem_count += 1
                 # We want to print the expiration date for the cert now
                 # deployed, if we could verify it.
-                # if we can't verify, then we **assume** latest expiration is corrent,
+                # if we can't verify, then we **assume** latest expiration is current,
                 # unless cert has been re-issued, then we want the date before that
                 # (remember there can be precerts in the list, so de-dupe)
                 sorted_expirations = sorted(set(cert.expirations))
@@ -486,6 +573,7 @@ def report_un_deployed(
                         f"{current_expiration} expiration: {cert.renewal_issued and 're-' or 'not ':>4}issued, {deployment_status}: {cert.common_name} ({cert.issuer})"
                     )
                 # hack to see if handled by "refactr"
+                # TODO - test result is ignored - do something with it or delete
                 if cert.renewal_issued and dig_it:
                     subprocess.run(  # nosec B603
                         f"dig {cert.common_name} +short".split()
@@ -497,6 +585,16 @@ def report_un_deployed(
 
 
 def output_json(data: list, output_to=None) -> None:
+    """output_json Output a single JSON object with all data we gathered.
+
+    In addition to the certificate data, we output metadata for reporting
+
+    TODO type input
+
+    Args:
+        data (list): each host-needing-followup is represented by a dictionary with values
+        output_to (TextIO, optional): where to output JSON. Defaults to None.
+    """
     if not output_to:
         output_to = sys.stdout
 
@@ -513,7 +611,7 @@ def output_json(data: list, output_to=None) -> None:
 
 
 # we need a singleton
-_exception_data: dict[str, Any] = {}
+_exemptions_data: dict[str, Any] = {}
 
 
 # hack to filter out "not ours" from SAN cert
@@ -521,44 +619,62 @@ _current_seed: str = ""
 
 
 def host_of_interest(
-    host: str, exceptions: Optional[Path] = None, certID: int = 0
+    host: str, exemptions: Optional[Path] = None, certID: int = 0
 ) -> bool:
-    global _exception_data
-    # first call is from outermost loop, where exceptions is provided
+    """host_of_interest determine if we care about host.
+
+    Certs often have many hosts in the SAN section of the file. Often, these
+    are for domains other than the one we're searching for. Additionally, we
+    have an `exemptions.yaml` file which describes hosts we own, but do not
+    care about the certificates.
+
+    TODO - initialization of exemption data should not be a side effect of this
+           function!
+
+    Args:
+        host (str): _description_
+        exemptions (Optional[Path], optional): First call only - path to exemptions yaml file. Defaults to None.
+        certID (int, optional): certificate ID - used for error reporting only. Defaults to 0.
+
+    Returns:
+        bool: True if we should process this host
+    """
+    global _exemptions_data
+    # first call is from outermost loop, where exemptions is provided
     # nested calls don't have (or need) access to argument
-    if not len(_exception_data) and exceptions:
+    if not len(_exemptions_data) and exemptions:
         try:
-            _exception_data = yaml.safe_load(open(exceptions))
+            _exemptions_data = yaml.safe_load(open(exemptions))
         except OSError as e:
-            logger.warning(f"Couldn't open '{exceptions}', no exceptions will be used")
-            _exception_data["hosts_to_skip"] = set()
-            _exception_data["domains_to_skip"] = set()
-            _exception_data["file_name"] = "no-exceptions-file-found"
-            _exception_data["reported"] = set()
+            logger.warning(f"Couldn't open '{exemptions}', no exemptions will be used")
+            _exemptions_data["hosts_to_skip"] = set()
+            _exemptions_data["domains_to_skip"] = set()
+            _exemptions_data["file_name"] = "no-exemptions-file-found"
+            _exemptions_data["reported"] = set()
         else:
-            _exception_data["hosts_to_skip"] = {
-                x["hostname"] for x in _exception_data["hosts_to_skip"]
+            _exemptions_data["hosts_to_skip"] = {
+                x["hostname"] for x in _exemptions_data["hosts_to_skip"]
             }
-            _exception_data["domains_to_skip"] = {
-                x["domain"] for x in _exception_data["domains_to_skip"]
+            _exemptions_data["domains_to_skip"] = {
+                x["domain"] for x in _exemptions_data["domains_to_skip"]
             }
-            _exception_data["file_name"] = exceptions.name
-            _exception_data["reported"] = set()
+            _exemptions_data["file_name"] = exemptions.name
+            _exemptions_data["reported"] = set()
 
     # host may not be a match for current seed if it came from SAN cert
     if _current_seed not in host:
         logger.debug(f'Skipping {host} for not matching "{_current_seed}" ({certID}')
         return False
-    # Now check if it matches exception criteria
+    # Now check if it matches exemption criteria
     # TODO: split each ignore reason, so we can tell why
     ignore = (
-        host.endswith(tuple(_exception_data["domains_to_skip"]))
-        or host in _exception_data["hosts_to_skip"]
+        host.endswith(tuple(_exemptions_data["domains_to_skip"]))
+        or host in _exemptions_data["hosts_to_skip"]
     )
-    if ignore and not host in _exception_data["reported"]:
-        logger.info(f'ignoring host {host} per {_exception_data["file_name"]}')
+    if ignore and not host in _exemptions_data["reported"]:
+        logger.info(f'ignoring host {host} per {_exemptions_data["file_name"]}')
         # TODO: save off exemption type with host
-        _exception_data["reported"].add(host)
+        _exemptions_data["reported"].add(host)
     return not ignore
 
 
@@ -569,11 +685,11 @@ def main(
     verbose: bool = False,
     debug: bool = False,
     in_file: Path = typer.Option(None, help="Path to file with host names to check"),
-    exceptions: Path = typer.Option(
-        default="exceptions.yaml", help="Path to exceptions file"
+    exemptions: Path = typer.Option(
+        default="exemptions.yaml", help="Path to exemptions file"
     ),
     config_dir: Path = typer.Option(
-        default=".", help="Path Prefix of exceptions & in-file"
+        default=".", help="Path Prefix of exemptions & in-file"
     ),
     dig_it: bool = False,
     generate_schema: bool = False,
@@ -587,14 +703,14 @@ def main(
 
     # handle single shot options
     if generate_schema:
-        print(Exceptions.schema_json(indent=2))
+        print(Exemptions.schema_json(indent=2))
         raise typer.Exit()
 
     # prepend the config dir
     if config_dir != Path("."):
         if in_file:
             in_file = config_dir / in_file
-        exceptions = config_dir / exceptions
+        exemptions = config_dir / exemptions
 
     # get set of domains to check
     if in_file:
@@ -627,7 +743,7 @@ def main(
             logger.info(f"Starting on seed '{host}'")
             _current_seed = host
             try:
-                if not host_of_interest(host, exceptions):
+                if not host_of_interest(host, exemptions):
                     continue
                 response = fetch_data(host)
             except Exception as e:
@@ -638,13 +754,13 @@ def main(
                 info = extract_cert_data(table, host, debug=debug)
                 certs_found += len(info)
                 possible_expirations = find_potentially_expiring_certs(
-                    info, warning_date, exception_file=exceptions
+                    info, warning_date, exemptions_file=exemptions
                 )
                 check_for_deployments(possible_expirations, debug=debug)
                 manual_checks_needed += possible_expirations
     except KeyboardInterrupt:
         # treat as normal loop end
-        logger.warning("Received KeyboardInterupt, stopping scan early")
+        logger.warning("Received KeyboardInterrupt, stopping scan early")
         pass
     if manual_checks_needed:
         if verbose:

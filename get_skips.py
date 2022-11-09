@@ -90,4 +90,3 @@ if __name__ == "__main__":
     )
     # typer.run does not return
     app()
-    logger.info("After return of type app")

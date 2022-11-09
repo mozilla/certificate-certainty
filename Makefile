@@ -15,6 +15,7 @@ help:
 	@echo "Makefile targets:"
 	@echo "	help 	this message"
 	@echo "	install	setup venv"
+	@echo "	commit	ensure all derived files up to date"
 	@false
 
 # set up dev environment
