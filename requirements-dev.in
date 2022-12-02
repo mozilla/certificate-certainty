@@ -4,3 +4,6 @@
 
 # needed for dev
 pip-tools
+
+types-PyYaml
+types-requests

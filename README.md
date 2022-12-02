@@ -71,16 +71,32 @@ $ ./report-tls-certs --generate-schema >exceptions_schema.json
 ```
 Hopefully, you're using an editor that can make use of the schema.
 
+## Configuration
+
+Installation dependent values need to be specified. They are passed to the
+container as environment variables. For convenience during development, you can
+also define values in `config.env` file. If that file exists, it will be copied
+into the container image.
+
+That file name is excluded from commit by `.gitignore` to avoid committing
+infrastructure details. It is assumed you have traditional production methods
+for setting envronment values in production.
+
+See [`config.env.template`](config.env.template) for more details if you want to
+use this approach.
+
 # Deployment
 
-The script can be deployed in a docker container. (For Mozilla use, the docker
-container is defined elsewhere, as it includes Mozilla specific data.)
+The scripts can be deployed in a docker container.
 
 **N.B.:** the tool is built atop typer, which can exhibit odd behavior if not
 connected to a PTY. Use the `--tty` option to the `docker run` command to avoid
 this.
 
 ## GCP tips
+
+The following tips apply if you want to run the container outside of a k8s
+environment, using a Scheduled Compute Engine VM.
 
 This job can take a long time with many domains (hours - my runs take about 14
 hours). The choke point is responsiveness of `crt.sh` site, so mutithreading

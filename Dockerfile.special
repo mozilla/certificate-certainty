@@ -1,0 +1,36 @@
+FROM python:3.10-slim
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN set -eux ; \
+    apt-get update ; \
+    apt-get -y upgrade --no-install-recommends; \
+    apt-get install -y --no-install-recommends netcat-openbsd ; \
+    apt-get clean ; \
+    rm -rf /var/lib/apt/lists/* ; \
+    python3 -m pip install --no-cache-dir --upgrade pip ; \
+    echo DONE
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir -r requirements.txt
+
+RUN useradd --home-dir /app --uid 1001 cc ; chown -R cc:cc /app
+### Debug Stuff start
+### RUN apt-get install -y httpie
+### Debug Stuff end
+USER cc
+
+# no virtual env, so set a sentinal
+ENV REPORT_TLS_CERTS_VENV=no_venv_needed
+ENV GOOGLE_APPLICATION_CREDENTIALS=.secrets/hwine-cc-dev-975260d2e5f8.json
+#ENV PATH=/app/.local/bin:${PATH}  REPORT_TLS_CERTS_VENV=no_venv_needed
+
+
+COPY --chown=cc:cc . .
+# ensure the secret was copied
+RUN md5sum ${GOOGLE_APPLICATION_CREDENTIALS}
+
+# TODO add precompile of python code
+
+CMD ["./weekly-run"]

@@ -1,0 +1,45 @@
+# start with nothing
+*
+# add the important ones
+!all-domain.txt
+!config.env
+!custom_requests.py
+!exceptions.yaml
+!generate_report.py
+!gspread_utils.py
+!merge_jobs.py
+!requirements.txt
+!upload-to-gcs
+!weekly-run
+# except for the service account credentials
+!.secrets/hwine-cc-dev-975260d2e5f8.json
+
+# certificate-certainty is likely to change, so be more liberal in what we include
+!report-tls-certs
+
+# Now remove by pattern from what we just added back
+
+# we don't transfer these, but they will be regenerated in the build
+# process
+**/__pycache__
+
+# but not all of them
+# none of the git dirs
+**/.git*
+# and local log dirs & files
+**/logs
+**/*log
+# and venv
+**/venv*
+
+# no text or dot-files
+**/*.md
+**/.??*
+
+# except for the service account credentials
+!.secrets/hwine-cc-dev-975260d2e5f8.json
+
+# odd stuff hwine has in .gitignore must be repeated here
+
+**/*_notes
+**/notes_*

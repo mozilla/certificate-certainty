@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+
+# wrapper for eventual cron job.
+#
+# PRE-REQUISITES:
+#
+#   1. github.com/mozilla/certificate-certainty must be checked out at same
+#      level as this repos root (i.e. it's a sibling checkout)
+#   2. that checkout must have a virtual env configured for it at <root>/venv
+
+# Environment variables to allow easy override when run from container
+# RTC_* vars are all related to the call of report-tls-certs script
+RTC_WEEKS=${RTC_WEEKS:-3}
+RTC_HOSTS=( ${RTC_HOSTS:---in-file all-domain.txt} )
+RTC_VERBOSE=${RTC_VERBOSE:---verbose}
+RTC_DEBUG=${RTC_DEBUG:---debug}
+RTC_JSON=${RTC_JSON:---json}
+
+# script local defaults
+# These are relative to the script's directory, so make sure that's where we are
+prog_dir="$(cd "$(dirname "$(readlink "${0}" || echo "${0}")")" ; /bin/pwd )"
+cd "${prog_dir}"
+
+DO_UPLOAD=true
+REPORT_TLS_CERTS_DIR=${REPORT_TLS_CERTS_DIR:-$prog_dir}
+REPORT_TLS_CERTS=${REPORT_TLS_CERTS_DIR}/report-tls-certs
+REPORT_TLS_CERTS_VENV=${REPORT_TLS_CERTS_VENV:-$REPORT_TLS_CERTS_DIR/venv/bin/activate}
+
+# tuning parameters for this script
+BATCH_LINE_COUNT=${BATCH_LINE_COUNT:-30}
+
+USAGE="usage: ${0##*/} [options] [rtc_args]
+Run expiring TLS certificate report
+
+Options:
+    --no-upload     do not upload files to GCS when in container
+    -h|--help       output this help
+
+Environment:
+    RTC_WEEKS       weeks in future to check, default $RTC_WEEKS
+    RTC_VERBOSE     verbose output, default enabled
+    RTC_DEBUG       debug output, default enabled
+    RTC_JSON        report output format, default enabled
+
+Report TLS Certificates options
+$(${REPORT_TLS_CERTS} --help)
+"
+
+set -u
+
+# see if we're in a container by testing sentinel value set in Dockerfile
+in_container=$(test "${REPORT_TLS_CERTS_VENV:-}" == "no_venv_needed" && echo true || echo false)
+
+warn() { for m; do echo "${m:-<missing-arg-to-warn>}"; done 1>&2 ; }
+die() { warn "$@" ; exit 2; }
+usage() { warn "$@" "${USAGE:-}" ; [[ $# == 0 ]] && exit 0 || exit 1;}
+
+warn "in $PWD"
+
+# Parse options
+declare -a RTC_ARGS
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --in-file) RTC_HOSTS=( "$1" "$2" ); shift ;;
+    --no-verbose) RTC_VERBOSE= ;;
+    --no-debug) RTC_DEBUG= ;;
+    --no-json) RTC_JSON= ;;
+    --no-upload) DO_UPLOAD=false ;;
+    -h|--help) usage ;;
+    -*) RTC_ARGS+=("$1") ;;  # assume options for RTC
+    *) RTC_HOSTS=("$@") ; break ;;
+    esac
+    shift
+done
+
+# Verify script availability
+test -d "${REPORT_TLS_CERTS_DIR}" || usage "Expected directory at '$REPORT_TLS_CERTS_DIR' not found"
+test -x "${REPORT_TLS_CERTS}" -a -f "${REPORT_TLS_CERTS}" || usage "Expected script at '$REPORT_TLS_CERTS' not found"
+
+# we only use venv when outside a container
+if ! $in_container; then
+    test -r "${REPORT_TLS_CERTS_VENV}" || usage "Expected activation script at '$REPORT_TLS_CERTS_VENV' not found"
+    source "${REPORT_TLS_CERTS_VENV}"
+fi
+
+# we want 'now' to be a file name that doesn't get messed with, so no ':' used
+now=$(date --utc +%Y-%m-%dT%H%MZ)
+warn "$(date --iso=min) <== started"
+ec=0
+declare -a run_queue
+declare -i run_number=0
+# HACK - do multiple small runs if the input is a file
+if [ "${RTC_HOSTS[0]}" != '--in-file' ]; then
+    # it is a list of hosts, just push onto run queue
+    run_queue+=("${RTC_HOSTS[*]}")
+else
+    # we have "--in-file file_name", and want to split the filename
+    split --numeric-suffixes=1 --lines="$BATCH_LINE_COUNT" "${RTC_HOSTS[1]}" part
+    for host_file in part*; do
+        run_queue+=("--in-file $host_file")
+    done
+fi
+warn "Running ${#run_queue[@]} jobs"
+for job in "${run_queue[@]}"; do
+    run_number+=1
+    printf -v job_string "job%02d" $run_number
+    #RTC_HOSTS=( "$job" )
+    RTC_HOSTS=( $job )
+    warn "Starting $job_string with args '${RTC_HOSTS[*]}' (len ${#RTC_HOSTS[*]})"
+    set -x
+    time "${REPORT_TLS_CERTS}" \
+        --weeks "${RTC_WEEKS}" \
+        "$RTC_VERBOSE" \
+        "$RTC_DEBUG" \
+        "$RTC_JSON" \
+        "${RTC_ARGS[@]}" \
+        "${RTC_HOSTS[@]}" \
+        > "${now}-${job_string}"-3w-all-domain-report.json \
+        2> "${now}-${job_string}"-3w-all-domain-report.stderr || ec=$?
+
+    test $ec -eq 0 || warn "$REPORT_TLS_CERTS_DIR/report-tls-certs exited with $ec ($job_string)"
+    set +x
+    warn "Finished job $run_number"
+done
+warn "$(date --iso=min) <== finished"
+
+if $in_container; then
+    if $DO_UPLOAD; then
+        ./upload-to-gcs "${now}"*
+    else
+        # in a container, but not uploading, so send files to stdout
+        for f in "${now}"*; do
+            echo "============ START $f ============"
+            cat "$f"
+            echo "============   END $f ============"
+        done
+    fi
+fi
+
+# Now that everything is uploaded, run the report
+warn "fetching"
+./generate_report.py fetch
+warn "merging"
+./generate_report.py merge
+warn "updating"
+./generate_report.py update
+warn "done with generating reports"
+
+
+exit $ec

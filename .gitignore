@@ -7,3 +7,4 @@ venv/
 .*
 
 # General Python exclusions
+config.env
