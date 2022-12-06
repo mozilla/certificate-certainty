@@ -33,4 +33,4 @@ RUN md5sum ${GOOGLE_APPLICATION_CREDENTIALS}
 
 # TODO add precompile of python code
 
-CMD ["./weekly-run"]
+CMD ["./run-upload-report"]

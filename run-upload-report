@@ -11,7 +11,7 @@
 # Environment variables to allow easy override when run from container
 # RTC_* vars are all related to the call of report-tls-certs script
 RTC_WEEKS=${RTC_WEEKS:-3}
-RTC_HOSTS=( ${RTC_HOSTS:---in-file all-domain.txt} )
+RTC_HOSTS=( ${RTC_HOSTS:---in-file all-domains.txt} )
 RTC_VERBOSE=${RTC_VERBOSE:---verbose}
 RTC_DEBUG=${RTC_DEBUG:---debug}
 RTC_JSON=${RTC_JSON:---json}
@@ -115,8 +115,8 @@ for job in "${run_queue[@]}"; do
         "$RTC_JSON" \
         "${RTC_ARGS[@]}" \
         "${RTC_HOSTS[@]}" \
-        > "${now}-${job_string}"-3w-all-domain-report.json \
-        2> "${now}-${job_string}"-3w-all-domain-report.stderr || ec=$?
+        > "${now}-${job_string}"-3w-all-domains-report.json \
+        2> "${now}-${job_string}"-3w-all-domains-report.stderr || ec=$?
 
     test $ec -eq 0 || warn "$REPORT_TLS_CERTS_DIR/report-tls-certs exited with $ec ($job_string)"
     set +x

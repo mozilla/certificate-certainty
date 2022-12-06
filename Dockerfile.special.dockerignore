@@ -1,16 +1,16 @@
 # start with nothing
 *
 # add the important ones
-!all-domain.txt
+# !all-domains.txt <== now supplied via helm chart
 !config.env
 !custom_requests.py
-!exceptions.yaml
+# !exceptions.yaml <== now supplied via help chart
 !generate_report.py
 !gspread_utils.py
 !merge_jobs.py
 !requirements.txt
 !upload-to-gcs
-!weekly-run
+!./run-upload-report
 # except for the service account credentials
 !.secrets/hwine-cc-dev-975260d2e5f8.json
 
