@@ -1,0 +1,7 @@
+#! /usr/bin/env bash
+
+# script to use as command under k8s (where no args are allowed)
+
+# Just hang forever, so we can attach for debugging image
+
+exec tail -f /dev/null

@@ -33,6 +33,7 @@ TODO: some domains have multiple valid certs at any point in time. Consider trea
 
 TODO: date reported for expiration in "re-issued, unreachable" should be stable, and the "soonest" expiration date. (This may not be meaningful when >2 certs exist.)
 
+
 # Operation
 
 ## Configuration
@@ -84,6 +85,13 @@ for setting envronment values in production.
 
 See [`config.env.template`](config.env.template) for more details if you want to
 use this approach.
+
+## Debugging tools
+
+A short script `debug-stub` is included in the image to use for debugging images
+created non-locally. It can be supplied as the "command" parameter when the
+image is launched. It will never terminate, so you can attach to the container
+with whatever debugging tools are convenient.
 
 # Deployment
 

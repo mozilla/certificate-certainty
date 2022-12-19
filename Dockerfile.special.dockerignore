@@ -11,6 +11,7 @@
 !requirements.txt
 !upload-to-gcs
 !./run-upload-report
+!./debug-stub
 # except for the service account credentials
 !.secrets/hwine-cc-dev-975260d2e5f8.json
 
