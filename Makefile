@@ -36,7 +36,9 @@ commit: check_venv exceptions_schema.json $(REQUIREMENT_FILES)
 # are we ready for a clean (prod) build
 .PHONY: no-local-mods
 no-local-mods:
-	test -z "$$(git status --porcelain --untracked-files=no)" || $(error "You have uncommitted files, so can not do a prod build")
+	echo ":$$(git status --porcelain --untracked-files=no):"
+	git status
+	test -z "$$(git status --porcelain --untracked-files=no)" || $(warning "You have uncommitted files, so can not do a prod build") true
 
 # make sure schema is current. Will rebuild too often, but with same
 # output, so no changes visible in git

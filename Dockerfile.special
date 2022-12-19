@@ -29,7 +29,9 @@ ENV GOOGLE_APPLICATION_CREDENTIALS=.secrets/hwine-cc-dev-975260d2e5f8.json
 
 COPY --chown=cc:cc . .
 # ensure the secret was copied
-RUN md5sum ${GOOGLE_APPLICATION_CREDENTIALS}
+# TODO: remove all references to local credentials from ignore, etc.
+#       files
+# RUN md5sum ${GOOGLE_APPLICATION_CREDENTIALS}
 
 # TODO add precompile of python code
 

@@ -5,6 +5,8 @@ notes_*/
 *.crt
 venv/
 .*
+# but we care about some dot-directories
+!.github
 
 # General Python exclusions
 config.env
