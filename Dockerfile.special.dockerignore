@@ -12,8 +12,8 @@
 !upload-to-gcs
 !./run-upload-report
 !./debug-stub
-# except for the service account credentials
-!.secrets/hwine-cc-dev-975260d2e5f8.json
+### except for the service account credentials
+##!.secrets/hwine-cc-dev-975260d2e5f8.json
 
 # certificate-certainty is likely to change, so be more liberal in what we include
 !report-tls-certs
@@ -37,8 +37,8 @@
 **/*.md
 **/.??*
 
-# except for the service account credentials
-!.secrets/hwine-cc-dev-975260d2e5f8.json
+### except for the service account credentials
+##!.secrets/hwine-cc-dev-975260d2e5f8.json
 
 # odd stuff hwine has in .gitignore must be repeated here
 

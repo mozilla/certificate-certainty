@@ -23,7 +23,7 @@ USER cc
 
 # no virtual env, so set a sentinal
 ENV REPORT_TLS_CERTS_VENV=no_venv_needed
-ENV GOOGLE_APPLICATION_CREDENTIALS=.secrets/hwine-cc-dev-975260d2e5f8.json
+#ENV GOOGLE_APPLICATION_CREDENTIALS=.secrets/hwine-cc-dev-975260d2e5f8.json
 #ENV PATH=/app/.local/bin:${PATH}  REPORT_TLS_CERTS_VENV=no_venv_needed
 
 

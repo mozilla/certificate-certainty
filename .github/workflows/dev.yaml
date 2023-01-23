@@ -7,8 +7,8 @@ on:
 env:
   APP: certificate-certainty
   APPLICATION_REPOSITORY: mozilla/certificate-certainty
-  GAR_LOCATION: us
-  GAR_REPOSITORY: us-central1-docker.pkg.dev/hwine-cc-dev/certificate-certainty/cc-cont-x86_64
+  GAR_LOCATION: us-central1
+  GAR_REPOSITORY: certificate-certainty
   GCP_PROJECT_ID: hwine-cc-dev
   IMAGE: cc-cont-x86_64
   REF: main
