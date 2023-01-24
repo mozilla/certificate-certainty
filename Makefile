@@ -5,8 +5,6 @@ REQUIREMENT_FILES := $(REQUIREMENT_SOURCE_FILES:.in=.txt)
 gitrev := $(shell git rev-parse --short=10 HEAD)
 VENV_NAME := venv
 now := $(shell date --utc +%Y%m%dT%H%MZ)
-github3_version:=1.1.0-$(now)-$(gitrev)
-image_to_use := offboard-slim
 
 .DEFAULT: help
 
@@ -59,6 +57,21 @@ requirements-vscode.txt: requirements-dev.txt
 # Constants set for production, can be overridden for dev
 gcr_repository ?= certificate-certainty
 prod_image ?= cc-cont-x86_64
+
+# We commit both input & generated files for Python requirements
+# (requirements*.in & requirements*.txt respectively). Since
+# git checkout doesn't preserve time-of-last-commit, the make process
+# may believe the requirements*.txt files need regenerating, leading to
+# build errors for non-dev deploys (where requirements*.txt are the
+# source of truth)
+#
+# So set a special make target to fix the timestamps, to be invoked only
+# from non-dev workflows
+.PHONY: non-dev-post-checkout-fix-timestamps
+non-dev-post-checkout-fix-timestamps:
+	ls -lt requirements*  # confirm issue
+	touch requirements*.txt  # fix issue
+	ls -lt requirements*  # confirm fix
 
 
 # Make sure we know if we built image from a dirty repo
