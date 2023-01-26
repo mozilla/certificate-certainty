@@ -14,8 +14,10 @@ sheet_history = "History"
 
 # Import from stdlib
 from dataclasses import dataclass
+from pathlib import Path
 
 # Import required modules
+import google.auth
 import gspread
 from gspread.spreadsheet import Spreadsheet
 from gspread.worksheet import Worksheet
@@ -114,17 +116,31 @@ scopes = [
 ]
 
 
+# TODO: make the file name set via environment variable
+__KEY_FILE_PATH = Path(".secrets/hwine-cc-dev-975260d2e5f8.json")
+
+
 def open_spreadsheet(reference: str) -> Spreadsheet:
+    # bit of a hack - we support service account login in 1 of 2 ways:
+    #   - if there's a JSON keyfile, we use that (dev use case)
+    #   - otherwise, use default service account (non-dev use case)
     # Assign credentials and path of style sheet
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        ".secrets/hwine-cc-dev-975260d2e5f8.json",
-        # scopes can be either a string, or an array of strings. This is
-        # correctly documented in the function's __doc__ string, but not typed
-        # correctly in the signature
-        scopes,  # type: ignore
-    )
+    if __KEY_FILE_PATH.exists():
+        creds = ServiceAccountCredentials.from_json_keyfile_name(
+            ".secrets/hwine-cc-dev-975260d2e5f8.json",
+            # scopes can be either a string, or an array of strings. This is
+            # correctly documented in the function's __doc__ string, but not typed
+            # correctly in the signature
+            scopes,  # type: ignore
+        )
+    else:
+        creds, _ = google.auth.default(
+            scopes=[
+                "https://spreadsheets.google.com/feeds",
+                "https://www.googleapis.com/auth/drive",
+            ]
+        )
     client = gspread.authorize(creds)
-    # spreadsheet = client.open_by_key <= could also be used
     spreadsheet = client.open_by_key(reference)
     return spreadsheet
 
