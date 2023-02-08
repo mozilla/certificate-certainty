@@ -47,6 +47,12 @@ jobs:
           repository: ${{ env.APPLICATION_REPOSITORY }}
             #ref: ${{ env.REF }}
 
+      - id: non-dev-post-checkout-fix-timestamps
+        run: |-
+          # the checkout above doesn't preserve commit timestamps, which
+          # can confuse make.
+          cd src && make non-dev-post-checkout-fix-timestamps
+
       - id: short-sha
         run: |-
           cd src && echo "SHORT_SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
